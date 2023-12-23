@@ -12,6 +12,7 @@ using Dalamud.Plugin.Services;
 using Dalamud.Utility.Signatures;
 using Dalamud.Interface.Windowing;
 using TabTab2.Windows;
+using Dalamud.Memory;
 
 namespace TabTab2;
 
@@ -23,6 +24,7 @@ public sealed class Plugin : IDalamudPlugin
     private unsafe delegate long SelectTabTarget2(long targetSystem, long camera, nuint gameObjects, bool inverse, char a5);
 
     private unsafe delegate long TargetSortComparator(nint a1, nint a2);
+    private unsafe delegate long TargetSortComparatorCone(float* a1, float* a2);
     private unsafe delegate long OnTabTarget(long a1, long a2, int* a3, long a4);
 
     [Signature("E8 ?? ?? ?? ?? 48 8B C8 48 85 C0 74 27 48 8B 00", DetourName = nameof(SelectTabTargetIgnoreDepthDetour))]
@@ -38,6 +40,9 @@ public sealed class Plugin : IDalamudPlugin
     // 41 54 41 56 41 57 B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 2B E0 8B 81 ?? ?? ?? ??
     [Signature("41 54 41 56 41 57 B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 2B E0 8B 81 ?? ?? ?? ??", DetourName = nameof(OnTabTargetDetour))]
     private readonly Hook<OnTabTarget>? tabTargetHook = null;
+
+    [Signature("48 83 EC 28 F3 0F 10 01", DetourName = nameof(TargetSortComparatorConeDetour))]
+    private readonly Hook<TargetSortComparatorCone>? targetSortComparatorConeHook = null;
     public WindowSystem WindowSystem { get; } = new("TabTab2");
     private const string CommandName = "/ptab";
 
@@ -61,6 +66,8 @@ public sealed class Plugin : IDalamudPlugin
     private string scttLogMessage1 = "SelectCustomTabTarget not triggered", scttLogMessage2 = "SelectCustomTabTarget not triggered", scttLogMessage3 = "SelectCustomTabTarget not triggered";
     private string tscdLogMessage1 = "TargetSortComparatorDetour not triggered", tscdLogMessage2 = "TargetSortComparatorDetour not triggered", tscdLogMessage3 = "TargetSortComparatorDetour not triggered", tscdLogMessage4 = "TargetSortComparatorDetour not triggered";
     private string ottdLogMessage = "OnTabTargetDetour not triggered";
+    private string sttcdMessage = "SelectTabTargetConeDetour not triggered";
+    private string targetSortConeMessage = "TargetSortComparatorConeDetour not triggered";
 
     public Plugin(DalamudPluginInterface _pluginInterface,
         ICommandManager _commandManager,
@@ -91,6 +98,7 @@ public sealed class Plugin : IDalamudPlugin
         tabConeHook?.Enable();
         selectInitialTabTargetHook?.Enable();
         targetSortComparatorHook?.Enable();
+        targetSortComparatorConeHook?.Enable();
         tabTargetHook?.Enable();
 
         config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
@@ -143,23 +151,21 @@ public sealed class Plugin : IDalamudPlugin
         //return SelectCustomTabTarget(targetSystem, camera, (uint*)gameObjects, inverse, a5);
     }
 
-    private string sttcdMessage;
     private unsafe long SelectTabTargetConeDetour(long targetSystem, long camera, nuint gameObjects, bool inverse, char a5)
     {
         // targetSystem seems to be the actual ITargetManager instance address
-        var v5 = *(ulong*)(targetSystem + 152);
-        var v51 = *(ulong*)(targetSystem + 160);
-        var v52 = *(ulong*)(targetSystem + 136);
-        var v53 = *(ulong*)(targetSystem + 128);
-        var v3 = *(nuint*)gameObjects;
         var result = tabConeHook!.Original(targetSystem, camera, gameObjects, inverse, a5);
+        if (result is 0)
+        {
+            return result;
+        }
+        var currentHp = Marshal.ReadInt32((nint)result + 444);
+        var maxHP = Marshal.ReadInt32((nint)result + 448);
+        var name = MemoryHelper.ReadStringNullTerminated((nint)result + 48) ?? "no";
         log.Debug("SelectTabTargetConeDetour triggered");
-        sttcdMessage = $"a1: {targetSystem:X} vs {targetManager.Address:X}" +
-            $"\na2: {camera:X}" +
-            $"\na3: {gameObjects:X} vs {gameObjects}" +
-            $"\na4 {inverse}" +
-            $"\na5 {a5}" +
-            $"\nresult: {result:X}";
+        sttcdMessage = $"\nresult: {result:X}" +
+            $"\nHP: {currentHp}/{maxHP}" +
+            $"\nName: {name}";
         //if (!config.Enabled)
         {
             return result;
@@ -199,6 +205,16 @@ public sealed class Plugin : IDalamudPlugin
         }*/
 
         return tabIgnoreDepthHook!.Original(targetSystem, camera, gameObjects, inverse, a5);
+    }
+
+    private unsafe long TargetSortComparatorConeDetour(float* a1, float* a2)
+    {
+        //log.Debug("TargetSortComparatorConeDetour triggered");
+        var result = targetSortComparatorConeHook!.Original(a1, a2);
+        targetSortConeMessage = $"Actor 1 {*a1} or {*a1:X}" +
+            $"\nActor 2 {*a2} or {*a2:X}" +
+            $"\nResult {result} or {result:X}";
+        return result;
     }
 
     private unsafe long TargetSortComparatorDetour(nint a1, nint a2)
@@ -298,12 +314,16 @@ public sealed class Plugin : IDalamudPlugin
 
         DevWindow.Separator();
 
+        DevWindow.Print(targetSortConeMessage);
+
+        DevWindow.Separator();
+
         DevWindow.Print(ottdLogMessage);
         DevWindow.Print("Current offset: " + DevWindow.actorIdOffset);
         var x = clientState?.LocalPlayer?.TargetObject?.ObjectId;
         if (x is not null)
         {
-            DevWindow.Print($"{x}");
+            DevWindow.Print($"{x} or {x:X}");
         }
     }
 
@@ -334,6 +354,8 @@ public sealed class Plugin : IDalamudPlugin
         tabTargetHook?.Dispose();
         targetSortComparatorHook?.Disable();
         targetSortComparatorHook?.Dispose();
+        targetSortComparatorConeHook?.Disable();
+        targetSortComparatorConeHook?.Dispose();
 
         commandManager.RemoveHandler(CommandName);
         WindowSystem.RemoveAllWindows();
